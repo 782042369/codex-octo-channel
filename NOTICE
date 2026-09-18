@@ -1,0 +1,18 @@
+codex-octo-channel
+==================
+
+This product includes software developed as part of codex-octo-channel
+(Licensed under the Apache License, Version 2.0).
+
+The Octo/WuKongIM protocol layer under src/protocol/ (socket.ts,
+api-fetch.ts, api-error.ts, types.ts) and the transport pattern in src/port.ts
+are ported from:
+
+  - Mininglamp-OSS/openclaw-channel-octo
+    https://github.com/Mininglamp-OSS/openclaw-channel-octo (Apache-2.0)
+  - 782042369/dsh-octo-channel
+    https://github.com/782042369/dsh-octo-channel (Apache-2.0)
+
+The conversation-key derivation in src/conversation.ts follows the same
+scheme as dsh-octo-channel (Apache-2.0), which ports it from
+whoisjiahao/dsh-feishu-channel (MIT).

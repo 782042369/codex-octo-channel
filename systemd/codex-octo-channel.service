@@ -1,0 +1,19 @@
+[Unit]
+Description=codex-octo-channel (Octo IM bridge for the Codex CLI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env node /www/wwwroot/codex-octo-channel/lib/main.js
+WorkingDirectory=/www/wwwroot/codex-octo-channel
+Environment=PATH=/root/.nvm/versions/node/v24.19.0/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CODEX_OCTO_CONFIG=/root/.codex-octo-channel/config.json
+Restart=on-failure
+RestartSec=5
+# A running codex turn is SIGTERMed on stop; give it time to flush the reply.
+TimeoutStopSec=120
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+{
+  "botToken": "bf_your_dedicated_bot_token",
+  "apiUrl": "https://im.example.com/api",
+  "accessMode": "owner",
+  "requireMention": true,
+  "sessionScope": "chat",
+  "ackDelayMs": 3000,
+  "codex": {
+    "bin": "/root/.nvm/versions/node/v24.19.0/bin/codex",
+    "sandbox": "workspace-write",
+    "timeoutMs": 600000,
+    "maxConcurrentTurns": 4
+  }
+}

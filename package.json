@@ -1,0 +1,38 @@
+{
+  "name": "codex-octo-channel",
+  "description": "Octo IM channel for the OpenAI Codex CLI: each DM, group, or thread drives its own persistent Codex session; committed answers return to Octo as text messages with typing indicators and an online heartbeat",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=20.0.0" },
+  "bin": { "codex-octo-channel": "lib/main.js" },
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node lib/main.js",
+    "test": "npm run typecheck && npm run build && node scripts/integration-test.mjs",
+    "test:codex": "node scripts/codex-online-test.mjs",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "keywords": ["codex", "openai-codex", "octo", "wukongim", "im", "channel", "bot"],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "crypto-js": "^4.2.0",
+    "curve25519-js": "^0.0.4",
+    "md5-typescript": "^1.0.5",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/crypto-js": "^4.2.0",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.9.3"
+  }
+}
