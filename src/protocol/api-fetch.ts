@@ -270,6 +270,140 @@ export async function fetchBotEvents(params: {
   return Array.isArray(response?.results) ? response.results : [];
 }
 
+// ── Media upload (presigned direct upload) and image/file messages ──────────
+
+/** Response of GET /v1/bot/upload/presigned. */
+export interface PresignedUpload {
+  /** HTTP method for the upload request; the documented flow uses PUT. */
+  method?: string;
+  /** Presigned upload target; send the exact file bytes here. */
+  uploadUrl: string;
+  /** Public URL to reference in the message payload after uploading. */
+  downloadUrl: string;
+  /** Content-Type header value to echo on the upload request. */
+  contentType?: string;
+  /** Content-Disposition header value to echo exactly, when present. */
+  contentDisposition?: string;
+  /** Storage key of the uploaded object. */
+  key?: string;
+}
+
+/** Image or file dimensions/size hints carried by the payload. */
+export interface MediaMeta {
+  /** Pixel width (images). */
+  width?: number;
+  /** Pixel height (images). */
+  height?: number;
+  /** Original file name (file messages). */
+  name?: string;
+  /** Byte size (file messages). */
+  size?: number;
+}
+
+/**
+ * Parse the IHDR chunk of a PNG buffer for its pixel dimensions.
+ * @param bytes - raw PNG file bytes.
+ * @returns Width/height when the buffer is a valid PNG, else undefined.
+ */
+export function pngSizeOf(bytes: Uint8Array): { width: number; height: number } | undefined {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (bytes.length < 24 || !signature.every((b, i) => bytes[i] === b)) return undefined;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+/**
+ * Request a presigned direct-upload slot from the Octo server.
+ * @param params - apiUrl, botToken, filename, and exact byte size.
+ * @returns The presigned upload descriptor.
+ */
+export async function getPresignedUpload(params: {
+  apiUrl: string;
+  botToken: string;
+  filename: string;
+  fileSize: number;
+  signal?: AbortSignal;
+}): Promise<PresignedUpload> {
+  const url =
+    params.apiUrl.replace(/\/+$/, "") +
+    "/v1/bot/upload/presigned?filename=" + encodeURIComponent(params.filename) +
+    "&fileSize=" + encodeURIComponent(String(params.fileSize));
+  const response = await fetch(url, {
+    headers: { Authorization: "Bearer " + params.botToken },
+    signal: params.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+  });
+  if (!response.ok) throw OctoApiError.from(response, "/v1/bot/upload/presigned", await response.text().catch(() => ""));
+  const parsed = (await response.json()) as PresignedUpload;
+  if (typeof parsed.uploadUrl !== "string" || parsed.uploadUrl === "" || typeof parsed.downloadUrl !== "string" || parsed.downloadUrl === "") {
+    throw new Error("octo: presigned upload response missing uploadUrl/downloadUrl");
+  }
+  return parsed;
+}
+
+/**
+ * Upload the exact file bytes to a presigned URL with method PUT, echoing the
+ * returned Content-Type and Content-Disposition headers.
+ * @param params - presigned descriptor and the raw bytes.
+ * @returns void; throws on a non-2xx storage answer.
+ */
+export async function uploadToPresignedUrl(params: {
+  presigned: PresignedUpload;
+  bytes: Uint8Array;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (params.presigned.contentType !== undefined) headers["Content-Type"] = params.presigned.contentType;
+  if (params.presigned.contentDisposition !== undefined) headers["Content-Disposition"] = params.presigned.contentDisposition;
+  const response = await fetch(params.presigned.uploadUrl, {
+    method: (params.presigned.method ?? "PUT").toUpperCase(),
+    headers,
+    body: params.bytes,
+    signal: params.signal ?? AbortSignal.timeout(120_000),
+  });
+  if (!response.ok) {
+    throw new Error("octo: presigned upload failed with status " + response.status);
+  }
+}
+
+/**
+ * Send one media message (payload.type=2 image or type=8 file) referencing an
+ * already-uploaded URL.
+ * @param params - target channel, media URL, and optional metadata.
+ * @returns The send result carrying the message id.
+ */
+export async function sendMediaMessage(params: {
+  apiUrl: string;
+  botToken: string;
+  channelId: string;
+  channelType: ChannelType;
+  /** 2 = image, 8 = file. */
+  messageType: 2 | 8;
+  url: string;
+  meta?: MediaMeta;
+  replyMsgId?: string;
+  clientMsgNo?: string;
+  signal?: AbortSignal;
+}): Promise<SendMessageResult | undefined> {
+  const payload: Record<string, unknown> = { type: params.messageType, url: params.url };
+  if (params.meta?.width !== undefined) payload.width = params.meta.width;
+  if (params.meta?.height !== undefined) payload.height = params.meta.height;
+  if (params.meta?.name !== undefined) payload.name = params.meta.name;
+  if (params.meta?.size !== undefined) payload.size = params.meta.size;
+  if (params.replyMsgId !== undefined) payload.reply = { message_id: params.replyMsgId };
+  return await postJson<SendMessageResult>(
+    params.apiUrl,
+    params.botToken,
+    "/v1/bot/sendMessage",
+    {
+      channel_id: params.channelId,
+      channel_type: params.channelType,
+      payload,
+      client_msg_no: params.clientMsgNo ?? generateClientMsgNo(),
+    },
+    params.signal,
+  );
+}
+
 /** Best-effort queue pruning after a recognized bot event has been accepted. */
 export async function ackBotEvent(params: {
   apiUrl: string;

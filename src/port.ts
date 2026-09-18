@@ -4,12 +4,17 @@
  * @module codex-octo-channel/port
  */
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
 import { WKSocket } from "./protocol/socket.js";
 import {
+  getPresignedUpload,
+  pngSizeOf,
   registerBot,
   sendHeartbeat,
+  sendMediaMessage,
   sendMessage as apiSendMessage,
   sendTyping,
+  uploadToPresignedUrl,
 } from "./protocol/api-fetch.js";
 import { ChannelType, MessageType, type BotMessage, type MentionPayload } from "./protocol/types.js";
 
@@ -303,6 +308,37 @@ export class OctoPort extends EventEmitter {
     });
     const messageId = result?.message_id ?? "";
     this.config.log?.("octo-channel: outbound send completed (channel=" + to + ", messageId=" + messageId + ", chars=" + text.length + ")");
+    return { messageId };
+  }
+
+  /** Send one image file to a chat via presigned direct upload.
+   * @param to - channel id (DM uid, group_no, or thread channel id).
+   * @param filePath - local image path (png dimensions are read automatically).
+   * @param options - reply target and channel type.
+   * @returns The send result carrying the message id.
+   */
+  async sendImage(to: string, filePath: string, options?: OctoSendOptions): Promise<OctoSendResult> {
+    const bytes = new Uint8Array(await readFile(filePath));
+    const filename = filePath.split("/").pop() ?? "image.png";
+    const presigned = await getPresignedUpload({
+      apiUrl: this.config.apiUrl,
+      botToken: this.config.botToken,
+      filename,
+      fileSize: bytes.byteLength,
+    });
+    await uploadToPresignedUrl({ presigned, bytes });
+    const result = await sendMediaMessage({
+      apiUrl: this.config.apiUrl,
+      botToken: this.config.botToken,
+      channelId: to,
+      channelType: (options?.channelType ?? ChannelType.DM) as ChannelType,
+      messageType: 2,
+      url: presigned.downloadUrl,
+      meta: pngSizeOf(bytes),
+      ...(options?.replyTo !== undefined ? { replyMsgId: options.replyTo } : {}),
+    });
+    const messageId = result?.message_id ?? "";
+    this.config.log?.("octo-channel: outbound image completed (channel=" + to + ", messageId=" + messageId + ", bytes=" + bytes.byteLength + ")");
     return { messageId };
   }
 
