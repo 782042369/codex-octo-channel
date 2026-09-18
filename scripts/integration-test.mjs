@@ -8,7 +8,8 @@
  * Usage: node scripts/integration-test.mjs
  */
 import { EventEmitter } from "node:events";
-import { rmSync } from "node:fs";
+import { rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { installChannel } from "../lib/channel.js";
 import { resolveConfig } from "../lib/config.js";
 
@@ -37,6 +38,7 @@ function makeFakePort() {
   port.ownerUid = "owner_uid";
   port.sends = [];
   port.tyings = [];
+  port.images = [];
   port.onMessage = (handler) => {
     port.on("message", handler);
     return () => port.off("message", handler);
@@ -47,6 +49,10 @@ function makeFakePort() {
   };
   port.typing = async (to, channelType) => {
     port.tyings.push({ to, channelType });
+  };
+  port.sendImage = async (to, filePath, options) => {
+    port.images.push({ to, filePath, options: options ?? {} });
+    return { messageId: "img-" + port.images.length };
   };
   return port;
 }
@@ -272,6 +278,48 @@ console.log("# workspace mode");
   const perCwd = perChat.runner.requests[0].cwd;
   assert(perCwd.startsWith("/tmp/coc-octo-integration/per-ws/") && perCwd !== "/tmp/coc-octo-integration/per-ws", "per-chat mode uses a private subdirectory");
   await perChat.channel.close();
+}
+
+// ── 10. Workspace image auto-send ────────────────────────────────────────
+console.log("# workspace image auto-send");
+{
+  const behavior = {
+    delayMs: 0,
+    next: (request) => {
+      mkdirSync(request.cwd, { recursive: true });
+      writeFileSync(join(request.cwd, "chart.png"), "fake-png-bytes");
+      writeFileSync(join(request.cwd, "photo.jpg"), "fake-jpg-bytes");
+      return { ok: true, result: { threadId: "img1", text: "here is the chart", durationMs: 1 } };
+    },
+  };
+  const { port, channel } = await makeStack(testConfig({}), behavior);
+  port.emit("message", inbound({ content: "draw a chart" }));
+  await sleep(80);
+  assert(port.images.length === 2, "new workspace images auto-sent (" + port.images.length + ")");
+  assert(port.images.every((i) => i.filePath.endsWith(".png") || i.filePath.endsWith(".jpg")), "only image extensions sent");
+  const textIdx = port.sends.findIndex((s) => s.text === "here is the chart");
+  assert(textIdx >= 0 && port.images.length === 2, "text reply delivered alongside images");
+  assert(port.images.every((i) => i.to === "user_a"), "images addressed to the chat");
+  await channel.close();
+}
+
+// ── 11. Image cap with overflow note ─────────────────────────────────────
+console.log("# image cap and overflow note");
+{
+  const behavior = {
+    delayMs: 0,
+    next: (request) => {
+      mkdirSync(request.cwd, { recursive: true });
+      for (let i = 1; i <= 5; i++) writeFileSync(join(request.cwd, "plot" + i + ".png"), "x".repeat(i));
+      return { ok: true, result: { threadId: "img2", text: "made five charts", durationMs: 1 } };
+    },
+  };
+  const { port, channel } = await makeStack(testConfig({}), behavior);
+  port.emit("message", inbound({ content: "draw five" }));
+  await sleep(80);
+  assert(port.images.length === 3, "cap respected (3 of 5 sent)");
+  assert(port.sends.some((s) => s.text.includes("另有 2 张")), "overflow note sent");
+  await channel.close();
 }
 
 console.log(failures === 0 ? "\nintegration test: PASS" : "\nintegration test: FAIL (" + failures + ")");

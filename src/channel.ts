@@ -7,8 +7,9 @@
  * and turns run as bounded codex exec child processes.
  * @module codex-octo-channel/channel
  */
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { extname, join } from "node:path";
 import type { ResolvedConfig } from "./config.js";
 import { createTurnId, createTurnTarget, workspaceSlug, type ConversationKey, type TurnTarget } from "./conversation.js";
 import type { CodexRunner, CodexRunOutcome, CodexRunRequest } from "./codex/runner.js";
@@ -43,6 +44,48 @@ interface TurnTask {
 interface ConversationState {
   queued: TurnTask[];
   running: boolean;
+}
+
+/** Image file extensions auto-sent to the chat after a turn. */
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+/** Directory walk depth bound for workspace image discovery. */
+const IMAGE_SCAN_DEPTH = 4;
+
+/**
+ * Recursively list image files in one workspace directory.
+ * @param dir - workspace root to scan.
+ * @returns Map of absolute path to mtime ms; unreadable trees scan as empty.
+ */
+async function listWorkspaceImages(dir: string): Promise<Map<string, number>> {
+  const found = new Map<string, number>();
+  /** Visit one directory level.
+   * @param current - directory path.
+   * @param depth - remaining depth budget.
+   */
+  const visit = async (current: string, depth: number): Promise<void> => {
+    if (depth < 0) return;
+    let entries: Dirent[];
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) {
+        await visit(path, depth - 1);
+      } else if (entry.isFile() && IMAGE_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+        try {
+          found.set(path, (await stat(path)).mtimeMs);
+        } catch {
+          /* file raced away */
+        }
+      }
+    }
+  };
+  await visit(dir, IMAGE_SCAN_DEPTH);
+  return found;
 }
 
 /** Banner shown for /help. */
@@ -216,6 +259,60 @@ export function installChannel(services: ChannelServices): Channel {
     return false;
   };
 
+  /** Upload and send images created during one turn, bounded by config.
+   * Attribution note: in shared workspace mode concurrent turns of different
+   * chats write the same directory; new files are attributed to the turn that
+   * finished, which is the common case for tool-generated artifacts.
+   * @param task - the completed turn (reply destination).
+   * @param cwd - workspace scanned for new images.
+   * @param before - snapshot taken before the turn ran.
+   */
+  const sendNewWorkspaceImages = async (
+    task: TurnTask,
+    cwd: string,
+    before: Map<string, number> | undefined,
+  ): Promise<void> => {
+    if (before === undefined || !config.sendWorkspaceImages) return;
+    const after = await listWorkspaceImages(cwd);
+    const fresh: string[] = [];
+    for (const [path, mtime] of after) {
+      const previous = before.get(path);
+      if (previous === undefined || mtime > previous) fresh.push(path);
+    }
+    if (fresh.length === 0) return;
+    fresh.sort();
+    const sendable: string[] = [];
+    for (const path of fresh) {
+      try {
+        if ((await stat(path)).size <= config.maxImageBytes) sendable.push(path);
+        else notify("codex-octo-channel: image skipped (over size cap): " + path);
+      } catch {
+        /* file vanished between scan and stat */
+      }
+    }
+    const capped = sendable.slice(0, config.maxImagesPerTurn);
+    for (const path of capped) {
+      try {
+        await port.sendImage(task.target.chatId, path, {
+          channelType: task.target.channelType,
+          replyTo: task.target.replyToMessageId,
+        });
+      } catch (error) {
+        reportSendFailure(error);
+      }
+    }
+    const overflow = sendable.length - capped.length;
+    if (overflow > 0) {
+      await port
+        .send(
+          task.target.chatId,
+          { text: "另有 " + overflow + " 张图片未发送（每轮上限 " + config.maxImagesPerTurn + " 张），已保留在工作区。" },
+          { channelType: task.target.channelType },
+        )
+        .catch(reportSendFailure);
+    }
+  };
+
   /** Execute one turn against the codex driver and deliver the reply.
    * @param task - the dequeued turn.
    */
@@ -228,6 +325,7 @@ export function installChannel(services: ChannelServices): Channel {
     } catch (error) {
       notify("codex-octo-channel: workspace mkdir failed: " + detail(error));
     }
+    const imagesBefore = config.sendWorkspaceImages ? await listWorkspaceImages(cwd) : undefined;
 
     const request: CodexRunRequest = {
       prompt: task.prompt,
@@ -251,6 +349,7 @@ export function installChannel(services: ChannelServices): Channel {
     if (outcome.ok) {
       if (outcome.result.threadId !== "") store.set(key, outcome.result.threadId);
       await task.presenter.deliver(outcome.result.text);
+      await sendNewWorkspaceImages(task, cwd, imagesBefore);
       return;
     }
     await task.presenter.fail(outcome.failure.message);

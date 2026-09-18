@@ -59,6 +59,12 @@ export interface Config {
   heartbeatIntervalMs?: number;
   /** Outbound messages longer than this are split into multiple messages. */
   maxReplyChars?: number;
+  /** Automatically send images that appear in the workspace during a turn. */
+  sendWorkspaceImages?: boolean;
+  /** Cap on images auto-sent per turn. */
+  maxImagesPerTurn?: number;
+  /** Largest image file auto-sent (bytes). */
+  maxImageBytes?: number;
   /** Root directory holding the per-chat codex workspaces; defaults to <stateRoot>/workspaces. */
   workspacesRoot?: string;
   /** per-chat: one subdirectory per conversation; shared: all chats share workspacesRoot directly. */
@@ -85,6 +91,9 @@ export interface ResolvedConfig {
   maxQueuedTurns: number;
   heartbeatIntervalMs: number;
   maxReplyChars: number;
+  sendWorkspaceImages: boolean;
+  maxImagesPerTurn: number;
+  maxImageBytes: number;
   workspacesRoot: string;
   workspaceMode: "per-chat" | "shared";
   codex: Required<Pick<CodexOptions, "bin" | "sandbox" | "timeoutMs" | "maxConcurrentTurns">> & {
@@ -151,6 +160,9 @@ export function resolveConfig(config: Config): ResolvedConfig {
     maxQueuedTurns: clampInt(config.maxQueuedTurns, 3, 1, 32),
     heartbeatIntervalMs: clampInt(config.heartbeatIntervalMs, 30_000, 5_000, 300_000),
     maxReplyChars: clampInt(config.maxReplyChars, 3500, 500, 50_000),
+    sendWorkspaceImages: config.sendWorkspaceImages ?? true,
+    maxImagesPerTurn: clampInt(config.maxImagesPerTurn, 3, 1, 10),
+    maxImageBytes: clampInt(config.maxImageBytes, 5_242_880, 10_240, 52_428_800),
     workspacesRoot: resolve(config.workspacesRoot ?? join(stateRoot, "workspaces")),
     workspaceMode: config.workspaceMode === "shared" ? "shared" : "per-chat",
     codex: {
