@@ -1,11 +1,14 @@
 {
   "name": "codex-octo-channel",
-  "description": "Octo IM channel for the OpenAI Codex CLI: each DM, group, or thread drives its own persistent Codex session; committed answers return to Octo as text messages with typing indicators and an online heartbeat",
+  "description": "Octo IM channel for the Codex CLI: each DM, group, or thread drives its own persistent Codex session on your machine; committed answers return to Octo as text messages",
   "version": "0.1.0",
   "type": "module",
-  "private": true,
-  "engines": { "node": ">=20.0.0" },
-  "bin": { "codex-octo-channel": "lib/main.js" },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "codex-octo-channel": "lib/main.js"
+  },
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
@@ -13,15 +16,45 @@
     },
     "./package.json": "./package.json"
   },
+  "files": [
+    "lib",
+    "src",
+    "scripts",
+    "systemd",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "config.example.json"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node lib/main.js",
     "test": "npm run typecheck && npm run build && node scripts/integration-test.mjs",
     "test:codex": "node scripts/codex-online-test.mjs",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "prepack": "npm run build"
   },
-  "keywords": ["codex", "openai-codex", "octo", "wukongim", "im", "channel", "bot"],
+  "keywords": [
+    "codex",
+    "openai-codex",
+    "codex-cli",
+    "octo",
+    "wukongim",
+    "im",
+    "channel",
+    "bot",
+    "chatbot"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/782042369/codex-octo-channel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/782042369/codex-octo-channel/issues"
+  },
+  "homepage": "https://github.com/782042369/codex-octo-channel#readme",
+  "author": "782042369",
   "license": "Apache-2.0",
   "dependencies": {
     "crypto-js": "^4.2.0",

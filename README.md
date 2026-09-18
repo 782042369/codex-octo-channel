@@ -22,10 +22,11 @@ Sister project of [dsh-octo-channel](https://github.com/782042369/dsh-octo-chann
 ## Install
 
 ```bash
-cd /www/wwwroot/codex-octo-channel
+git clone https://github.com/782042369/codex-octo-channel.git
+cd codex-octo-channel
 npm install
 npm run build
-```
+npm test   # optional: offline integration test
 
 ## Configure
 
