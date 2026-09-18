@@ -75,7 +75,11 @@ async function bootstrap(): Promise<number> {
   } else {
     log("codex-octo-channel: accessMode=" + config.accessMode + " (secure default: owner)");
   }
-  log("codex-octo-channel: starting bot (" + config.apiUrl + ", codex=" + config.codex.bin + ", sandbox=" + config.codex.sandbox + ")");
+  log(
+    "codex-octo-channel: starting bot (" + config.apiUrl + ", codex=" + config.codex.bin +
+      ", sandbox=" + config.codex.sandbox + ", workspace=" + config.workspacesRoot +
+      " [" + config.workspaceMode + "])" ,
+  );
 
   let closing = false;
   const shutdown = (signal: string): void => {

@@ -59,6 +59,10 @@ export interface Config {
   heartbeatIntervalMs?: number;
   /** Outbound messages longer than this are split into multiple messages. */
   maxReplyChars?: number;
+  /** Root directory holding the per-chat codex workspaces; defaults to <stateRoot>/workspaces. */
+  workspacesRoot?: string;
+  /** per-chat: one subdirectory per conversation; shared: all chats share workspacesRoot directly. */
+  workspaceMode?: "per-chat" | "shared";
   /** Codex CLI driver tunables. */
   codex?: CodexOptions;
 }
@@ -81,6 +85,8 @@ export interface ResolvedConfig {
   maxQueuedTurns: number;
   heartbeatIntervalMs: number;
   maxReplyChars: number;
+  workspacesRoot: string;
+  workspaceMode: "per-chat" | "shared";
   codex: Required<Pick<CodexOptions, "bin" | "sandbox" | "timeoutMs" | "maxConcurrentTurns">> & {
     model: string | undefined;
     configOverrides: string[];
@@ -145,6 +151,8 @@ export function resolveConfig(config: Config): ResolvedConfig {
     maxQueuedTurns: clampInt(config.maxQueuedTurns, 3, 1, 32),
     heartbeatIntervalMs: clampInt(config.heartbeatIntervalMs, 30_000, 5_000, 300_000),
     maxReplyChars: clampInt(config.maxReplyChars, 3500, 500, 50_000),
+    workspacesRoot: resolve(config.workspacesRoot ?? join(stateRoot, "workspaces")),
+    workspaceMode: config.workspaceMode === "shared" ? "shared" : "per-chat",
     codex: {
       bin: codex.bin?.trim() || "codex",
       model: codex.model?.trim() || undefined,
@@ -188,6 +196,7 @@ function applyEnv(file: Config, env: NodeJS.ProcessEnv = process.env): Config {
   str("CODEX_OCTO_API_URL", "apiUrl");
   str("CODEX_OCTO_WS_URL", "wsUrl");
   str("CODEX_OCTO_STATE_ROOT", "stateRoot");
+  str("CODEX_OCTO_WORKSPACES_ROOT", "workspacesRoot");
   str("CODEX_OCTO_ACCESS_MODE", "accessMode");
   str("CODEX_OCTO_MODEL", "model");
   return merged as Config & { model?: string };

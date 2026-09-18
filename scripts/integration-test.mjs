@@ -257,5 +257,22 @@ console.log("# access policy");
   await channel.close();
 }
 
+// ── 9. Workspace mode ────────────────────────────────────────────────────
+console.log("# workspace mode");
+{
+  const behavior = { delayMs: 0, next: () => ({ ok: true, result: { threadId: "w1", text: "ok", durationMs: 1 } }) };
+  const shared = await makeStack(testConfig({ workspaceMode: "shared", workspacesRoot: "/tmp/coc-octo-integration/shared-ws" }), behavior);
+  shared.port.emit("message", inbound({ content: "ws" }));
+  await sleep(60);
+  assert(shared.runner.requests[0].cwd === "/tmp/coc-octo-integration/shared-ws", "shared mode runs in the shared directory");
+  await shared.channel.close();
+  const perChat = await makeStack(testConfig({ workspacesRoot: "/tmp/coc-octo-integration/per-ws" }), behavior);
+  perChat.port.emit("message", inbound({ content: "ws" }));
+  await sleep(60);
+  const perCwd = perChat.runner.requests[0].cwd;
+  assert(perCwd.startsWith("/tmp/coc-octo-integration/per-ws/") && perCwd !== "/tmp/coc-octo-integration/per-ws", "per-chat mode uses a private subdirectory");
+  await perChat.channel.close();
+}
+
 console.log(failures === 0 ? "\nintegration test: PASS" : "\nintegration test: FAIL (" + failures + ")");
 process.exit(failures === 0 ? 0 : 1);

@@ -57,6 +57,8 @@ Create `~/.codex-octo-channel/config.json` (see `config.example.json`); environm
 | `ackDelayMs` | `3000` | delayed "working on it" note; `0` disables |
 | `maxQueuedTurns` | `3` | per-conversation backpressure |
 | `maxReplyChars` | `3500` | longer answers are chunked |
+| `workspacesRoot` | `<stateRoot>/workspaces` | root directory for codex workspaces |
+| `workspaceMode` | `per-chat` | `per-chat`: one subdirectory per conversation; `shared`: all chats share `workspacesRoot` directly (single-cwd mode, like dsh-octo-channel) |
 | `codex.bin` | `codex` | codex executable (use an absolute path under systemd) |
 | `codex.sandbox` | `workspace-write` | sandbox for fresh threads (`read-only` / `workspace-write` / `danger-full-access`) |
 | `codex.model` | CLI default | `-m` override |

@@ -5,6 +5,8 @@
   "requireMention": true,
   "sessionScope": "chat",
   "ackDelayMs": 3000,
+  "workspacesRoot": "/www/wwwroot/codex-octo-channel/workspaces",
+  "workspaceMode": "per-chat",
   "codex": {
     "bin": "/root/.nvm/versions/node/v24.19.0/bin/codex",
     "sandbox": "workspace-write",

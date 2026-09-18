@@ -133,7 +133,17 @@ export function installChannel(services: ChannelServices): Channel {
   const conversations = new Map<ConversationKey, ConversationState>();
   const runningTurns = new Set<Promise<void>>();
   const gate = new Semaphore(config.codex.maxConcurrentTurns);
-  const workspacesRoot = join(config.stateRoot, "workspaces");
+  const workspacesRoot = config.workspacesRoot;
+  void mkdir(workspacesRoot, { recursive: true }).catch((error: unknown) => {
+    notify("codex-octo-channel: workspacesRoot mkdir failed: " + detail(error));
+  });
+
+  /** Resolve the codex working directory for one conversation.
+   * @param key - conversation identity.
+   * @returns Absolute cwd: the shared directory, or a per-chat subdirectory.
+   */
+  const workspaceOf = (key: ConversationKey): string =>
+    config.workspaceMode === "shared" ? workspacesRoot : join(workspacesRoot, workspaceSlug(key));
 
   /** Report an outbound send failure once.
    * @param error - transport failure.
@@ -193,6 +203,7 @@ export function installChannel(services: ChannelServices): Channel {
         "队列： " + pendingCount(key) + " 个等待中",
         "模型： " + (config.codex.model ?? "codex 默认"),
         "沙箱： " + config.codex.sandbox,
+        "工作区： " + workspaceOf(key) + (config.workspaceMode === "shared" ? "（共享）" : ""),
       ];
       if (state !== undefined && state.running) parts.push("当前有一轮正在处理");
       await sendNotice(message, parts.join("\n"));
@@ -211,7 +222,7 @@ export function installChannel(services: ChannelServices): Channel {
   const executeTurn = async (task: TurnTask): Promise<void> => {
     const key = task.target.conversationKey;
     const stored = store.get(key);
-    const cwd = join(workspacesRoot, workspaceSlug(key));
+    const cwd = workspaceOf(key);
     try {
       await mkdir(cwd, { recursive: true });
     } catch (error) {
