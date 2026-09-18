@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /** Process entry: wire config, transport, driver, and channel together.
  * @module codex-octo-channel/main
  */
