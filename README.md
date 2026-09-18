@@ -21,6 +21,14 @@ Sister project of [dsh-octo-channel](https://github.com/782042369/dsh-octo-chann
 
 ## Install
 
+**非技术同学 / one-liner**（自动检查环境 → 安装 → 询问 Token → 设为开机自启）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/782042369/codex-octo-channel/master/install.sh | bash
+```
+
+手动安装 / manual：
+
 ```bash
 # from npm (recommended)
 npm i -g codex-octo-channel

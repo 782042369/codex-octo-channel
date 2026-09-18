@@ -11,7 +11,7 @@ import { CodexRunner } from "./codex/runner.js";
 import { SessionStore } from "./codex/session-store.js";
 
 /** Version reported to the Octo server at registration. */
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.1.1";
 
 /** Timestamped stdout logger.
  * @param line - message without trailing newline.
@@ -31,9 +31,28 @@ function hasCredentials(config: ResolvedConfig): boolean {
 
 /**
  * Bootstrap the service: load config, open state, connect, install handlers.
+ * Handles --help/--version without starting the service.
  * @returns The process exit code.
  */
 async function bootstrap(): Promise<number> {
+  const argv = process.argv.slice(2);
+  if (argv.includes("--help") || argv.includes("-h")) {
+    console.log([
+      "codex-octo-channel - Octo IM bridge for the Codex CLI",
+      "",
+      "Usage: codex-octo-channel [--help] [--version]",
+      "",
+      "Configuration: " + join(loadConfig().stateRoot, "config.json"),
+      "  botToken   Octo bot token (bf_... or app_...)",
+      "  apiUrl     Octo REST base URL",
+      "Docs: https://github.com/782042369/codex-octo-channel",
+    ].join("\n"));
+    return 0;
+  }
+  if (argv.includes("--version") || argv.includes("-v")) {
+    console.log(PLUGIN_VERSION);
+    return 0;
+  }
   const config = loadConfig();
   if (!hasCredentials(config)) {
     log(
