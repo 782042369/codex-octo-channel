@@ -11,7 +11,7 @@ import { CodexRunner } from "./codex/runner.js";
 import { SessionStore } from "./codex/session-store.js";
 
 /** Version reported to the Octo server at registration. */
-const PLUGIN_VERSION = "0.1.1";
+const PLUGIN_VERSION = "0.2.0";
 
 /** Timestamped stdout logger.
  * @param line - message without trailing newline.
