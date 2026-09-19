@@ -1,10 +1,15 @@
 import { EventEmitter } from "events";
 import WebSocket from "ws";
-import { randomBytes } from "node:crypto";
-import { generateKeyPair, sharedKey } from "curve25519-js";
-import { Buffer } from "buffer";
-import CryptoJS from "crypto-js";
-import { Md5 } from "md5-typescript";
+import {
+  createDecipheriv,
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  diffieHellman,
+  generateKeyPairSync,
+  randomBytes,
+  type KeyObject,
+} from "node:crypto";
 import type { BotMessage, MessagePayload } from "./types.js";
 
 // ─── WuKongIM Binary Protocol Constants ─────────────────────────────────────
@@ -190,35 +195,79 @@ function encodeVariableLength(len: number): number[] {
   return ret;
 }
 
-// ─── AES-CBC Encryption Helpers ─────────────────────────────────────────────
+// ─── Session Crypto Helpers (node:crypto) ───────────────────────────────────
+// The wire format is fixed: X25519 key exchange, AES-128-CBC payloads, and an
+// MD5-of-base64 shared secret as the session key. node:crypto implements all
+// three natively, so the pure-JS crypto-js / curve25519-js / md5-typescript
+// dependencies are not needed.
 
-function aesDecrypt(data: Uint8Array, aesKey: string, aesIV: string): Uint8Array {
-  const str = uintToString(data);
-  const ciphertext = CryptoJS.enc.Base64.parse(str);
-  const decrypted = CryptoJS.AES.decrypt(
-    CryptoJS.enc.Base64.stringify(ciphertext),
-    CryptoJS.enc.Utf8.parse(aesKey),
-    {
-      keySize: 128 / 8,
-      iv: CryptoJS.enc.Utf8.parse(aesIV),
-      mode: CryptoJS.mode.CBC,
-      padding: CryptoJS.pad.Pkcs7,
-    },
-  );
-  return Uint8Array.from(Buffer.from(decrypted.toString(CryptoJS.enc.Utf8)));
+/** DER prefix of an X25519 SPKI public key; the raw 32-byte key follows it. */
+const X25519_SPKI_PREFIX = Buffer.from("302a300506032b656e032100", "hex");
+
+/** Serialize the raw public half of an X25519 key pair.
+ * @param key - the generated public KeyObject.
+ * @returns The base64 raw 32-byte public key sent in CONNECT.
+ */
+function exportRawPublicKey(key: KeyObject): string {
+  const der = Buffer.from(key.export({ type: "spki", format: "der" }));
+  return der.subarray(X25519_SPKI_PREFIX.length).toString("base64");
 }
 
-function aesEncrypt(message: string, aesKey: string, aesIV: string): string {
-  return CryptoJS.AES.encrypt(
-    CryptoJS.enc.Utf8.parse(message),
-    CryptoJS.enc.Utf8.parse(aesKey),
-    {
-      keySize: 128 / 8,
-      iv: CryptoJS.enc.Utf8.parse(aesIV),
-      mode: CryptoJS.mode.CBC,
-      padding: CryptoJS.pad.Pkcs7,
-    },
-  ).toString();
+/** Rebuild a public KeyObject from the raw key in a CONNACK.
+ * @param raw - raw 32-byte X25519 public key.
+ * @returns The public KeyObject consumed by diffieHellman.
+ */
+function importRawPublicKey(raw: Uint8Array): KeyObject {
+  return createPublicKey({
+    key: Buffer.concat([X25519_SPKI_PREFIX, Buffer.from(raw)]),
+    format: "der",
+    type: "spki",
+  });
+}
+
+/** Derive the 16-byte session key from the DH shared secret.
+ * @param secret - raw X25519 shared secret.
+ * @returns The first 16 hex characters of MD5(base64(secret)).
+ */
+function sessionKeyOf(secret: Uint8Array): string {
+  const secretBase64 = Buffer.from(secret).toString("base64");
+  return createHash("md5").update(secretBase64, "utf8").digest("hex").substring(0, 16);
+}
+
+/** Decrypt one WuKongIM payload with the session key.
+ * @param data - raw payload bytes (the server sends base64 text).
+ * @param aesKey - 16-character session key.
+ * @param aesIV - 16-character IV taken from the CONNACK salt.
+ * @returns The decrypted plaintext bytes.
+ */
+/** Decrypt one WuKongIM payload with the session key.
+ * @param data - raw payload bytes (the server sends base64 text).
+ * @param aesKey - 16-character session key.
+ * @param aesIV - 16-character IV taken from the CONNACK salt.
+ * @returns The decrypted plaintext bytes.
+ */
+export function aesDecrypt(data: Uint8Array, aesKey: string, aesIV: string): Uint8Array {
+  const ciphertext = Buffer.from(uintToString(data), "base64");
+  const decipher = createDecipheriv("aes-128-cbc", Buffer.from(aesKey, "utf8"), Buffer.from(aesIV, "utf8"));
+  return Uint8Array.from(Buffer.concat([decipher.update(ciphertext), decipher.final()]));
+}
+
+/** Derive the session key and IV from one DH exchange.
+ *
+ * Exported so the regression test can pin this against the pre-node:crypto
+ * implementation: a mistake here silently breaks every inbound message.
+ * @param privateKey - our X25519 private key from CONNECT.
+ * @param serverKeyBase64 - raw server public key from CONNACK.
+ * @param salt - CONNACK salt, used as the IV.
+ * @returns The 16-character AES key and IV.
+ */
+export function deriveSessionCipher(privateKey: KeyObject, serverKeyBase64: string, salt: string): { aesKey: string; aesIV: string } {
+  const serverPubKey = importRawPublicKey(Uint8Array.from(Buffer.from(serverKeyBase64, "base64")));
+  const secret = diffieHellman({ privateKey, publicKey: serverPubKey });
+  return {
+    aesKey: sessionKeyOf(secret),
+    aesIV: salt && salt.length > 16 ? salt.substring(0, 16) : salt,
+  };
 }
 
 // ─── Packet Encoding / Decoding ─────────────────────────────────────────────
@@ -335,11 +384,11 @@ export class WKSocket extends EventEmitter {
   // Per-instance crypto state (set after CONNACK)
   private aesKey = "";
   private aesIV = "";
-  private dhPrivateKey: Uint8Array | null = null;
+  private dhPrivateKey: KeyObject | null = null;
   private serverVersion = 0;
 
-  // Buffer for handling packet fragmentation (sticky packets)
-  private tempBuffer: number[] = [];
+  /** Bytes of a partially received frame, retained across chunks. */
+  private tempBuffer = new Uint8Array(0);
 
   constructor(private opts: WKSocketOptions) {
     super();
@@ -382,11 +431,7 @@ export class WKSocket extends EventEmitter {
     reject?.(error);
   }
 
-  /** Update credentials for reconnection (e.g. after token refresh) */
-  updateCredentials(uid: string, token: string): void {
-    this.opts.uid = uid;
-    this.opts.token = token;
-  }
+
 
   /** Gracefully disconnect */
   disconnect(): void {
@@ -440,33 +485,14 @@ export class WKSocket extends EventEmitter {
     });
   }
 
-  /**
-   * True only after a successful CONNACK — i.e. the connection can actually carry traffic.
-   *
-   * Distinct from {@link isConnectingOrConnected}: between `open` and CONNACK the socket is
-   * OPEN but unusable, and anything that reports liveness must not treat that window as
-   * connected.
-   */
+/**
+ * True only after a successful CONNACK — i.e. the connection can actually carry traffic.
+ *
+ * Between `open` and CONNACK the socket is OPEN but unusable, so anything that reports
+ * liveness must not treat that window as connected.
+ */
   isConnected(): boolean {
     return this.connected;
-  }
-
-  /**
-   * True while a socket exists and is either connecting or open — "somebody is already
-   * building this connection, stay out of the way".
-   *
-   * Compared against the numeric readyState values rather than the ws class's statics: the
-   * class is mocked in tests, and a mock missing a static would silently make this
-   * predicate wrong instead of failing loudly.
-   */
-  isConnectingOrConnected(): boolean {
-    const state = this.ws?.readyState;
-    return state === 0 /* CONNECTING */ || state === 1 /* OPEN */;
-  }
-
-  /** True while a backoff reconnect is scheduled but has not fired yet. */
-  hasPendingReconnect(): boolean {
-    return this.reconnectTimer !== null;
   }
 
   /**
@@ -506,7 +532,7 @@ export class WKSocket extends EventEmitter {
       this.ws = null;
     }
 
-    this.tempBuffer = [];
+    this.tempBuffer = new Uint8Array(0);
     const ws = new WebSocket(this.opts.wsUrl, { maxPayload: MAX_PACKET_BYTES, handshakeTimeout: CONNECT_DEADLINE_MS });
     ws.binaryType = "arraybuffer";
     this.ws = ws;
@@ -514,12 +540,11 @@ export class WKSocket extends EventEmitter {
 
     ws.on("open", () => {
       if (this.ws !== ws) return; // stale guard
-      this.tempBuffer = [];
-      // Generate the DH seed from the OS CSPRNG; Math.random is not suitable for key material.
-      const seed = randomBytes(32);
-      const keyPair = generateKeyPair(seed);
-      this.dhPrivateKey = keyPair.private;
-      const pubKey = Buffer.from(keyPair.public).toString("base64");
+      this.tempBuffer = new Uint8Array(0);
+      // X25519 key pair from the OS CSPRNG; only the raw public half is sent.
+      const keyPair = generateKeyPairSync("x25519");
+      this.dhPrivateKey = keyPair.privateKey;
+      const pubKey = exportRawPublicKey(keyPair.publicKey);
 
       const deviceID = generateDeviceID() + "W";
       const packet = encodeConnectPacket({
@@ -676,57 +701,61 @@ export class WKSocket extends EventEmitter {
     }
   }
 
-  /** Parse fragmented WebSocket bytes without spread-based stack overflow.
-   * @param data - one received binary chunk.
-   * @returns void; malformed input closes the current generation.
-   */
+/** Parse fragmented WebSocket bytes with one bounded copy per chunk.
+ * @param data - one received binary chunk.
+ * @returns void; malformed input closes the current generation.
+ */
   private handleRawData(data: Uint8Array): void {
     try {
       if (data.byteLength > MAX_BUFFER_BYTES || this.tempBuffer.length + data.byteLength > MAX_BUFFER_BYTES) throw new Error("octo: binary parser buffer limit exceeded");
-      for (const byte of data) this.tempBuffer.push(byte);
-      let lenBefore: number;
-      let lenAfter: number;
-      do {
-        lenBefore = this.tempBuffer.length;
-        this.tempBuffer = this.unpackOne(this.tempBuffer);
-        lenAfter = this.tempBuffer.length;
-      } while (lenBefore !== lenAfter && lenAfter >= 1);
+      const merged = new Uint8Array(this.tempBuffer.length + data.byteLength);
+      merged.set(this.tempBuffer, 0);
+      merged.set(data, this.tempBuffer.length);
+      let offset = 0;
+      for (;;) {
+        const consumed = this.unpackAt(merged, offset);
+        if (consumed < 0) break;
+        offset += consumed;
+      }
+      // Copy instead of subarray: a retained view would pin the merged buffer.
+      this.tempBuffer = offset === 0 ? merged : merged.slice(offset);
     } catch (err) {
       console.debug("[WKSocket] decode error:", err instanceof Error ? err.message : err);
-      this.tempBuffer = [];
+      this.tempBuffer = new Uint8Array(0);
       if (this.ws) {
         try { this.ws.close(); } catch { /* ignore */ }
       }
     }
   }
 
-  private unpackOne(data: number[]): number[] {
-    if (data.length === 0) return data;
+/** Decode one packet starting at the given offset.
+ * @param data - accumulated frame bytes.
+ * @param offset - index of the candidate packet's first byte.
+ * @returns Bytes consumed, or -1 while the packet is still incomplete.
+ */
+  private unpackAt(data: Uint8Array, offset: number): number {
+    if (offset >= data.length) return -1;
 
-    const header = data[0];
-    const packetType = header >> 4;
+    const packetType = data[offset] >> 4;
     if (packetType < PacketType.CONNECT || packetType > PacketType.DISCONNECT) throw new Error("octo: unknown packet type");
 
-    // PONG is a single byte
+    // PING/PONG are single-byte packets
     if (packetType === PacketType.PONG) {
       this.onPong();
-      return data.slice(1);
+      return 1;
     }
-    // PING from server (shouldn't happen but handle gracefully)
     if (packetType === PacketType.PING) {
-      return data.slice(1);
+      return 1;
     }
 
-    const length = data.length;
-    const fixedHeaderLength = 1;
-    let pos = fixedHeaderLength;
+    let pos = offset + 1;
     let remLength = 0;
     let multiplier = 1;
     let hasMore = false;
     let remLengthFull = true;
 
     do {
-      if (pos > length - 1) {
+      if (pos > data.length - 1) {
         remLengthFull = false;
         break;
       }
@@ -736,18 +765,14 @@ export class WKSocket extends EventEmitter {
       hasMore = (digit & 0x80) !== 0;
     } while (hasMore);
 
-    if (!remLengthFull) return data; // Incomplete frame
+    if (!remLengthFull) return -1; // Incomplete frame
     if (remLength > MAX_PACKET_BYTES) throw new Error("octo: packet exceeds max payload");
 
-    const remLengthLength = pos - fixedHeaderLength;
-    const totalLength = fixedHeaderLength + remLengthLength + remLength;
+    const totalLength = pos - offset + remLength;
+    if (offset + totalLength > data.length) return -1; // Incomplete packet
 
-    if (totalLength > length) return data; // Incomplete packet
-
-    // Extract one complete packet
-    const packetData = new Uint8Array(data.slice(0, totalLength));
-    this.onPacket(packetData);
-    return data.slice(totalLength);
+    this.onPacket(data.subarray(offset, offset + totalLength));
+    return totalLength;
   }
 
   // ─── Packet Handling ────────────────────────────────────────────────────
@@ -804,12 +829,9 @@ export class WKSocket extends EventEmitter {
 
     if (reasonCode === 1) {
       // Success — derive AES key from DH shared secret
-      const serverPubKey = Uint8Array.from(Buffer.from(serverKey, "base64"));
-      const secret = sharedKey(this.dhPrivateKey!, serverPubKey);
-      const secretBase64 = Buffer.from(secret).toString("base64");
-      const aesKeyFull = Md5.init(secretBase64);
-      this.aesKey = aesKeyFull.substring(0, 16);
-      this.aesIV = salt && salt.length > 16 ? salt.substring(0, 16) : salt;
+      const cipher = deriveSessionCipher(this.dhPrivateKey!, serverKey, salt);
+      this.aesKey = cipher.aesKey;
+      this.aesIV = cipher.aesIV;
 
       this.connected = true;
       this.lastConnectTime = Date.now();

@@ -38,7 +38,7 @@ export interface CodexRunResult {
 /** Terminal failure of one agent turn. */
 export interface CodexRunFailure {
   /** Stable machine-readable cause. */
-  kind: "timeout" | "nonzero-exit" | "no-output";
+  kind: "timeout" | "nonzero-exit" | "no-output" | "spawn-error" | "cancelled";
   /** Human-readable diagnostic (already log-safe). */
   message: string;
   /** Process exit code, when the process ran and exited on its own. */
@@ -62,6 +62,8 @@ export interface CodexRunRequest {
   resumeThreadId?: string | undefined;
   /** Extra env entries merged into the child environment. */
   env?: Record<string, string> | undefined;
+  /** Called as soon as a new thread id is known, so it survives a later failure. */
+  onThreadStarted?: ((threadId: string) => void) | undefined;
 }
 
 /** Minimal child-process handle the runner consumes. */
@@ -74,6 +76,8 @@ export interface CodexChild {
   kill(signal: "SIGTERM" | "SIGKILL"): void;
   /** Resolves with the exit code, or null when terminated by a signal. */
   exited: Promise<number | null>;
+  /** Spawn-level failure (ENOENT/EACCES); set when the process never started. */
+  spawnError?: Error | undefined;
 }
 
 /** Spawner signature; injectable so tests can fake the CLI. */
@@ -244,9 +248,13 @@ export const defaultSpawn: CodexSpawnFn = (bin, args, options) => {
     env: options.env === undefined ? process.env : { ...process.env, ...options.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  let spawnError: Error | undefined;
   const exited = new Promise<number | null>((resolve) => {
     child.on("exit", (code) => resolve(code));
-    child.on("error", () => resolve(null));
+    child.on("error", (error: Error) => {
+      spawnError = error;
+      resolve(null);
+    });
   });
   return {
     stdout: toLines(child.stdout as NodeJS.ReadableStream),
@@ -259,6 +267,9 @@ export const defaultSpawn: CodexSpawnFn = (bin, args, options) => {
       }
     },
     exited,
+    get spawnError(): Error | undefined {
+      return spawnError;
+    },
   };
 };
 
@@ -298,6 +309,8 @@ export class CodexRunner {
   private readonly spawnFn: CodexSpawnFn;
   private readonly activeChildren = new Set<CodexChild>();
   private readonly cancelledChildren = new WeakSet<CodexChild>();
+  /** Set by cancelAll(): a runner that is shutting down must not spawn again. */
+  private closed = false;
 
   /**
    * @param options - resolved runner tunables.
@@ -313,6 +326,7 @@ export class CodexRunner {
    * @returns void; affected turns fail with a shutdown diagnostic.
    */
   cancelAll(): void {
+    this.closed = true;
     for (const child of this.activeChildren) {
       this.cancelledChildren.add(child);
       child.kill("SIGTERM");
@@ -333,6 +347,16 @@ export class CodexRunner {
    * @returns The turn outcome: success carries the final message and thread id.
    */
   async run(request: CodexRunRequest): Promise<CodexRunOutcome> {
+    if (this.closed) {
+      return {
+        ok: false,
+        failure: {
+          kind: "cancelled",
+          message: "服务正在关闭，本回合未执行。",
+          beforeThreadStart: true,
+        },
+      };
+    }
     const startedAt = Date.now();
     const workDir = await mkdtemp(join(tmpdir(), "codex-octo-"));
     const lastMessageFile = join(workDir, "last-message.txt");
@@ -375,7 +399,11 @@ export class CodexRunner {
           if (event === undefined) return;
           if (event.type === "thread.started") {
             const id = (event as ThreadStartedEvent).thread_id;
-            if (typeof id === "string" && id !== "") threadId = id;
+            if (typeof id === "string" && id !== "") {
+              const first = threadId === "";
+              threadId = id;
+              if (first) request.onThreadStarted?.(id);
+            }
           } else if (event.type === "item.completed") {
             const item = (event as ItemCompletedEvent).item;
             if (item?.type === "agent_message" && typeof item.text === "string" && item.text !== "") {
@@ -412,24 +440,37 @@ export class CodexRunner {
         return {
           ok: false,
           failure: {
-            kind: "nonzero-exit",
-            message: "\u670d\u52a1\u6b63\u5728\u5173\u95ed\uff0c\u672c\u8f6e\u5df2\u4e2d\u6b62\u3002",
+            kind: "cancelled",
+            message: "服务正在关闭，本轮已中止。",
             beforeThreadStart: threadId === "",
           },
         };
       }
-      if (timedOut || exitCode === null) {
+      const spawnError = childRef?.spawnError;
+      if (spawnError !== undefined) {
         return {
           ok: false,
           failure: {
-            kind: "timeout",
-            message:
-              "Codex \u5904\u7406\u8d85\u65f6\uff08" + Math.round(durationMs / 1000) + "s\uff09\uff0c\u5df2\u7ec8\u6b62\u3002",
+            kind: "spawn-error",
+            message: "无法启动 Codex（" + spawnError.message + "），请检查 codex.bin 配置。",
             beforeThreadStart: threadId === "",
           },
         };
       }
       if (exitCode !== 0) {
+        // A process that exited 0 beats a timer that fired while it was already
+        // finishing: discarding an answer that was actually produced is the worse
+        // failure, so the timeout check only applies to non-zero exits.
+        if (timedOut || exitCode === null) {
+          return {
+            ok: false,
+            failure: {
+              kind: "timeout",
+              message: "Codex \u5904\u7406\u8d85\u65f6\uff08" + Math.round(durationMs / 1000) + "s\uff09\uff0c\u5df2\u7ec8\u6b62\u3002",
+              beforeThreadStart: threadId === "",
+            },
+          };
+        }
         return {
           ok: false,
           failure: {

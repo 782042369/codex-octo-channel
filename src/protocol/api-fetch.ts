@@ -19,6 +19,10 @@ export const MAX_429_RETRIES = 2;
 const MAX_RETRY_AFTER_MS = 10_000;
 /** Cumulative backoff sleep budget for one call. */
 const MAX_429_BACKOFF_WAIT_MS = 15_000;
+/** Extra attempts for transient network/5xx failures on idempotent calls. */
+export const MAX_TRANSIENT_RETRIES = 2;
+/** Base delay of one transient retry; doubled per attempt, then jittered. */
+const TRANSIENT_RETRY_BASE_MS = 400;
 const DEFAULT_HEADERS = { "Content-Type": "application/json" };
 
 /**
@@ -55,6 +59,15 @@ function backoffSleep(ms: number, signal: AbortSignal | undefined, cause: unknow
   });
 }
 
+/** Backoff for one transient retry attempt.
+ * @param attempt - zero-based index of the attempt that just failed.
+ * @returns Delay in milliseconds, jittered upward by up to 25%.
+ */
+function transientRetryDelay(attempt: number): number {
+  const base = TRANSIENT_RETRY_BASE_MS * 2 ** attempt;
+  return Math.round(base * (1 + Math.random() * 0.25));
+}
+
 /**
  * POST JSON to the Octo bot API with Bearer auth and bounded 429 retry.
  * Resolves undefined when the server answers 2xx with an empty body.
@@ -65,10 +78,11 @@ export async function postJson<T>(
   path: string,
   payload: Record<string, unknown>,
   signal?: AbortSignal,
-  opts?: { retryOn429?: boolean },
+  opts?: { retryOn429?: boolean; retryOnTransient?: boolean },
 ): Promise<T | undefined> {
   const url = apiUrl.replace(/\/+$/, "") + path;
   const retryOn429 = opts?.retryOn429 ?? true;
+  const retryOnTransient = opts?.retryOnTransient ?? false;
   let waited = 0;
 
   for (let attempt = 0; ; attempt++) {
@@ -80,12 +94,21 @@ export async function postJson<T>(
       ? AbortSignal.any([signal, AbortSignal.timeout(POST_HARD_CEILING_MS)])
       : AbortSignal.timeout(DEFAULT_POST_TIMEOUT_MS);
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { ...DEFAULT_HEADERS, Authorization: "Bearer " + botToken },
-      body: JSON.stringify(payload),
-      signal: fetchSignal,
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { ...DEFAULT_HEADERS, Authorization: "Bearer " + botToken },
+        body: JSON.stringify(payload),
+        signal: fetchSignal,
+      });
+    } catch (error) {
+      // Safe to retry only for callers that opted in: every retried call either
+      // carries a client_msg_no (deduplicated server-side) or is idempotent.
+      if (!retryOnTransient || attempt >= MAX_TRANSIENT_RETRIES || signal?.aborted) throw error;
+      await backoffSleep(transientRetryDelay(attempt), signal, error);
+      continue;
+    }
 
     if (response.ok) {
       const text = await response.text();
@@ -99,7 +122,13 @@ export async function postJson<T>(
 
     const body = await response.text().catch(() => "");
     const err = OctoApiError.from(response, path, body);
-    if (!err.isRateLimited) throw err;
+    if (!err.isRateLimited) {
+      if (retryOnTransient && err.status >= 500 && attempt < MAX_TRANSIENT_RETRIES) {
+        await backoffSleep(transientRetryDelay(attempt), signal, err);
+        continue;
+      }
+      throw err;
+    }
 
     console.warn(
       "octo: rate limited on " + path + " (scope=" + (err.rateLimitScope ?? "?") + " "
@@ -132,7 +161,7 @@ export async function registerBot(params: {
   if (params.agentPlatform) body.agent_platform = params.agentPlatform;
   if (params.agentVersion) body.agent_version = params.agentVersion;
   if (params.pluginVersion) body.plugin_version = params.pluginVersion;
-  const result = await postJson<BotRegisterResp>(params.apiUrl, params.botToken, path, body, params.signal);
+  const result = await postJson<BotRegisterResp>(params.apiUrl, params.botToken, path, body, params.signal, { retryOnTransient: true });
   if (!result) throw new Error("Octo bot registration returned empty response");
   return result;
 }
@@ -181,6 +210,8 @@ export async function sendMessage(params: {
       client_msg_no: params.clientMsgNo ?? generateClientMsgNo(),
     },
     params.signal,
+    // A retried send reuses the same client_msg_no, so the server dedupes it.
+    { retryOnTransient: true },
   );
 }
 

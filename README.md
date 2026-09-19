@@ -98,8 +98,10 @@ journalctl -u codex-octo-channel -f
 ## Tests
 
 ```bash
-npm test                        # typecheck + build + offline integration test
+npm test                        # typecheck + build + all offline suites
 node scripts/integration-test.mjs   # fake transport + fake codex driver
+node scripts/crypto-test.mjs        # session crypto + frame parser vector
+node scripts/shutdown-test.mjs      # shutdown + driver-failure paths
 node scripts/codex-online-test.mjs  # REAL codex: fresh exec + resume recall
 OCTO_TOKEN=bf_... OCTO_API_URL=... node scripts/smoke.mjs   # live Octo
 ```

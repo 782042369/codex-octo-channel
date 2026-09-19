@@ -3,6 +3,7 @@
  * @module codex-octo-channel/main
  */
 import { mkdir } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { loadConfig, type ResolvedConfig } from "./config.js";
 import { installChannel, type Channel } from "./channel.js";
@@ -11,7 +12,19 @@ import { CodexRunner } from "./codex/runner.js";
 import { SessionStore } from "./codex/session-store.js";
 
 /** Version reported to the Octo server at registration. */
-const PLUGIN_VERSION = "0.2.0";
+/** Version reported to the Octo server at registration. */
+const PLUGIN_VERSION = readPluginVersion();
+
+/** Read this package's version so it cannot drift from package.json.
+ * @returns The package version, or "0.0.0" when the manifest cannot be read.
+ */
+function readPluginVersion(): string {
+  try {
+    return (createRequire(import.meta.url)("../package.json") as { version?: string }).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 /** Timestamped stdout logger.
  * @param line - message without trailing newline.
@@ -132,6 +145,16 @@ async function bootstrap(): Promise<number> {
   log("codex-octo-channel: online as " + port.robotId + " (owner " + port.ownerUid + ")");
   return 0;
 }
+
+// A stray rejection must be visible in the log instead of silently killing a bot
+// that is halfway through a turn; an uncaught exception exits so systemd restarts it.
+process.on("unhandledRejection", (reason: unknown): void => {
+  log("codex-octo-channel: unhandled rejection: " + (reason instanceof Error ? reason.message : String(reason)));
+});
+process.on("uncaughtException", (error: Error): void => {
+  log("codex-octo-channel: uncaught exception: " + error.message);
+  process.exit(1);
+});
 
 bootstrap().then(
   (code: number): void => {

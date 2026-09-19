@@ -1,7 +1,7 @@
 {
   "name": "codex-octo-channel",
   "description": "Octo IM channel for the Codex CLI: each DM, group, or thread drives its own persistent Codex session on your machine; committed answers return to Octo as text messages",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"
@@ -30,7 +30,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node lib/main.js",
-    "test": "npm run typecheck && npm run build && node scripts/integration-test.mjs",
+    "test": "npm run typecheck && npm run build && node scripts/integration-test.mjs && node scripts/crypto-test.mjs && node scripts/shutdown-test.mjs",
     "test:codex": "node scripts/codex-online-test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "prepack": "npm run build"
@@ -57,13 +57,9 @@
   "author": "782042369",
   "license": "Apache-2.0",
   "dependencies": {
-    "crypto-js": "^4.2.0",
-    "curve25519-js": "^0.0.4",
-    "md5-typescript": "^1.0.5",
     "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@types/crypto-js": "^4.2.0",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.10",
     "typescript": "^5.9.3"

@@ -11,7 +11,7 @@ import { mkdir, readdir, stat } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { extname, join } from "node:path";
 import type { ResolvedConfig } from "./config.js";
-import { createTurnId, createTurnTarget, workspaceSlug, type ConversationKey, type TurnTarget } from "./conversation.js";
+import { createTurnTarget, workspaceSlug, type ConversationKey, type TurnTarget } from "./conversation.js";
 import type { CodexRunner, CodexRunOutcome, CodexRunRequest } from "./codex/runner.js";
 import type { SessionStore } from "./codex/session-store.js";
 import type { OctoMessage, OctoPort } from "./port.js";
@@ -34,7 +34,6 @@ export interface Channel {
 
 /** One queued agent turn with its immutable reply destination. */
 interface TurnTask {
-  readonly id: string;
   readonly target: TurnTarget;
   readonly prompt: string;
   readonly presenter: TurnPresenter;
@@ -332,13 +331,23 @@ export function installChannel(services: ChannelServices): Channel {
       cwd,
       ...(stored === undefined ? {} : { resumeThreadId: stored.threadId }),
       ...(Object.keys(config.codex.env).length === 0 ? {} : { env: config.codex.env }),
+      // Persist the id the moment it exists: a later timeout or crash must not
+      // make the next turn resume a stale thread.
+      onThreadStarted: (threadId: string) => store.set(key, threadId),
     };
 
     let outcome: CodexRunOutcome = await runner.run(request);
 
-    // A resume can fail before the thread even starts (e.g. the stored
-    // rollout was pruned). Retry exactly once with a fresh thread.
-    if (!outcome.ok && outcome.failure.beforeThreadStart && request.resumeThreadId !== undefined) {
+    // A resume can fail before the thread even starts (e.g. the stored rollout
+    // was pruned). Retry exactly once with a fresh thread, unless the driver never
+    // started at all or the shutdown path cancelled this turn.
+    if (
+      !outcome.ok &&
+      outcome.failure.beforeThreadStart &&
+      request.resumeThreadId !== undefined &&
+      outcome.failure.kind !== "spawn-error" &&
+      outcome.failure.kind !== "cancelled"
+    ) {
       notify("codex-octo-channel: resume " + request.resumeThreadId + " failed (" + outcome.failure.message + "), starting a fresh thread");
       store.reset(key);
       outcome = await runner.run({ ...request, resumeThreadId: undefined });
@@ -372,6 +381,12 @@ export function installChannel(services: ChannelServices): Channel {
       try {
         await gate.acquire();
         try {
+          // close() may have run while this turn waited for a slot; spawning a
+          // codex process now would outlive cancelAll() and hang the shutdown.
+          if (!active) {
+            await task.presenter.fail("服务正在关闭，本回合未执行。").catch(reportSendFailure);
+            return;
+          }
           await executeTurn(task);
         } finally {
           gate.release();
@@ -392,7 +407,7 @@ export function installChannel(services: ChannelServices): Channel {
   /** Inbound message handler: policy gates, commands, then enqueue.
    * @param message - normalized inbound Octo message.
    */
-  const handleMessage = async (message: OctoMessage): Promise<void> => {
+  const handleInbound = async (message: OctoMessage): Promise<void> => {
     if (!active) return;
     if (!isMessageAllowed(message, config, port.ownerUid)) return;
     if (message.content.trim() === "") return;
@@ -426,12 +441,22 @@ export function installChannel(services: ChannelServices): Channel {
     });
     const state = stateOf(target.conversationKey);
     state.queued.push({
-      id: createTurnId(),
       target,
       prompt: buildPrompt(message),
       presenter,
     });
     pump(target.conversationKey);
+  };
+
+  /** Inbound entry point: a rejection here would otherwise kill the process.
+   * @param message - normalized inbound Octo message.
+   */
+  const handleMessage = async (message: OctoMessage): Promise<void> => {
+    try {
+      await handleInbound(message);
+    } catch (error) {
+      notify("codex-octo-channel: inbound handler failed: " + detail(error));
+    }
   };
 
   const unsubscribe = port.onMessage((message) => {
