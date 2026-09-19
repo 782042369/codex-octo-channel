@@ -1,7 +1,7 @@
 {
   "name": "codex-octo-channel",
   "description": "Octo IM channel for the Codex CLI: each DM, group, or thread drives its own persistent Codex session on your machine; committed answers return to Octo as text messages",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"
@@ -19,6 +19,7 @@
   "files": [
     "lib",
     "src",
+    "assets",
     "scripts",
     "systemd",
     "README.md",
